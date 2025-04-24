@@ -26,31 +26,10 @@ os.chdir('../src')
 dataloader = DataLoader()
 
 dataset = dataloader.load_data()
-dataset.columns
-dataset['1stFlrSF']
-dataset['PricePerArea'] = dataset['SalePrice'] / dataset['LotArea']
+
 # ---------------------------
 # 💰 지역별 '평단가' 기반 등급 분류 (5단계)
 # ---------------------------
-price_per_area_by_neigh = dataset['PricePerArea']
-q20 = price_per_area_by_neigh.quantile(0.20)
-q40 = price_per_area_by_neigh.quantile(0.40)
-q60 = price_per_area_by_neigh.quantile(0.60)
-q80 = price_per_area_by_neigh.quantile(0.80)
-
-def classify_price_grade(price):
-    if price <= q20:
-        return 1
-    elif price <= q40:
-        return 2
-    elif price <= q60:
-        return 3
-    elif price <= q80:
-        return 4
-    else:
-        return 5
-
-# dataset['PriceGrade'] = dataset['PricePerArea'].apply(classify_price_grade)
 
 #  위험도 평균 열 생성
 dataset['Risk_Avg'] = (
@@ -63,65 +42,100 @@ dataset['Risk_Avg'] = (
 
 # 위험도 평균을 5단계로 그룹화
 dataset['Risk_Level'] = dataset['Risk_Avg'].round()
-dataset['Risk_Level'].value_counts().sort_index()
-dataset.groupby('Risk_Level')['PricePerArea'].mean()
-# 결측값 제거
-dataset = dataset.dropna(subset=['PricePerArea'])
+dataset['Risk_Level'].shape
 
+# 위험도별 주택 개수 확인
+# 위험도 5는 1개 밖에없어서 제거한다고 설명할때 사용 가능!
+cnt_RiskLevel = dataset['Risk_Level'].value_counts().sort_index()
+
+plt.figure(figsize=(6, 4))
+cnt_RiskLevel.sort_index().plot(kind='bar', color='salmon', edgecolor='black')
+plt.xlabel('Risk_Level')
+plt.ylabel('# of house by risk level')
+plt.title('Risk_level_house_cnt')
+plt.grid(axis='y', linestyle='--', alpha=0.5)
+plt.xticks(rotation=0)
+
+# 화재 위험도별 평단가 두개다 막대그래프로 그래프 그리기
+# 평균 평단가 바 그래프
+mean_RiskLevel = dataset.groupby('Risk_Level')['BuildingPricePerTotalSF'].mean()
+plt.figure(figsize=(6, 4))
+mean_RiskLevel.sort_index().plot(kind='bar', color='salmon', edgecolor='black')
+plt.xlabel('Risk_Level')
+plt.ylabel('# of house price by risk level')
+plt.title('Risk_level_house_price_mean')
+plt.grid(axis='y', linestyle='--', alpha=0.5)
+plt.xticks(rotation=0)
+
+# 중앙값 평단가 바 그래프
+median_RiskLevel = dataset.groupby('Risk_Level')['BuildingPricePerTotalSF'].median()
+plt.figure(figsize=(6, 4))
+median_RiskLevel.sort_index().plot(kind='bar', color='salmon', edgecolor='black')
+plt.xlabel('Risk_Level')
+plt.ylabel('# of house price by risk level')
+plt.title('Risk_level_house_price_median')
+plt.grid(axis='y', linestyle='--', alpha=0.5)
+plt.xticks(rotation=0)
+
+# 결측값 제거 및 위험도 5 제거 (분석을 위해)
+dataset = dataset.dropna(subset=['BuildingPricePerTotalSF'])
+dataset = dataset[dataset['Risk_Level'] != 5]
+
+# 분산분석 과정
 import statsmodels.api as sm
 from statsmodels.formula.api import ols
 
-model = ols('PricePerArea ~ C(Risk_Level)',data=dataset).fit()
+# 분산분석 결과 위험도별 가격이 차이가 있다는 것을 확인 (단 분산분석을 믿을수 있는가?)
+# 아래 잔차의 정규성 검정 및 잔차의 등분산성 검정으로 확인
+model = ols('BuildingPricePerTotalSF ~ C(Risk_Level)',data=dataset).fit()
 anova_results = sm.stats.anova_lm(model, typ=2)
 print(anova_results)
 
-# 해당 그림이 0을 기준으로 잘 분포되어있어야함 (잔차의 정규성)
-plt.rcParams['font.family'] = 'Malgun Gothic'
-plt.scatter(model.fittedvalues, model.resid)
-
-# 애는 만족안함
+# 잔차의 정규성 검정 방법중 샤피로 위크 검정결과 잔차의 정규성이 성립한다는 귀무가설 기각
+# 잔차의 정규성 만족안함
 import scipy.stats as sp
 W, p = sp.shapiro(model.resid)
 print(f'검정통계량: {W:.3f}, 유의확률: {p:.3f}')
 
-# 애는 아님
+# qqplot으로 정규성 검정을 크로스체크한결과 역시 만족하지 않음
 from scipy.stats import probplot
 plt.figure(figsize=(6, 6))
 probplot(model.resid, dist="norm", plot=plt)
 
 
-# 등분산성 검정 (만족)
+# bartlett을 사용한 잔차의 등분산성 검증 결과 등분산성 역시 성립하지 않음
 from scipy.stats import bartlett
 from scipy.stats import kruskal
-groups = [1, 2, 3, 4, 5]
+groups = [1, 2, 3, 4]
 grouped_residuals = [model.resid[dataset['Risk_Level'] == group] for group in groups]
 test_statistic, p_value = bartlett(*grouped_residuals)
 print(f"검정통계량: {test_statistic}, p-value: {p_value}")
 
-# 변수명을 dataset으로 바꾸고 Kruskal-Wallis 검정 다시 실행
 
-# 그룹 나누기
-grouped = [group['PricePerArea'].values for name, group in dataset.groupby('Risk_Level')]
+# 따라서 Kruskal-Wallis 검정 (비모수 검정)을 통해 위험도별 주택 평단가의 차이가 통계적으로 유의미한지 확인
+grouped = [group['BuildingPricePerTotalSF'].values for name, group in dataset.groupby('Risk_Level')]
 
-# Kruskal-Wallis 검정
 kruskal_stat, kruskal_p = kruskal(*grouped)
 
-# 결과 반환
+# Kruskal-Wallis 검정결과
 kruskal_result = {
     "검정통계량 (H)": kruskal_stat,
     "p-value": kruskal_p,
     "결론": "✔️ 그룹 간 차이가 유의함 (p < 0.05)" if kruskal_p < 0.05 else "❌ 유의한 차이 없음 (p ≥ 0.05)"
 }
-
+# 위험도별 주택 평단가 차이가 하나 이상은 존재함을 확인
+# 따라서 사후검정을 통해 어떤 위험도끼리 차이가 있는지 확인
 kruskal_result
 
 
-# 비모수 사후검정
+# dunn-test(비모수 사후검정)
 import scikit_posthocs as sp
-posthoc = sp.posthoc_dunn(dataset, val_col='PricePerArea', group_col='Risk_Level', p_adjust='bonferroni')
+posthoc = sp.posthoc_dunn(dataset, val_col='BuildingPricePerTotalSF', group_col='Risk_Level', p_adjust='bonferroni')
+# 비모수 사후검정 실시 결과 위험도 1,3 과 3,4 사이의 차이는 의미가 없음을 확인
 posthoc
 
-
+# 위험도 2에 해당하는 평단가가 다른 위험도에 비해 높을 수 있다.
+# 단 이것이 화재 안정성이 높은 자재가 집값을 비싸게 만든다고 볼수없다.
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -130,13 +144,6 @@ import plotly.graph_objects as go
 color_map = {
     1: 'white', 2: 'gray', 3: 'yellow', 4: 'orange', 5: 'red'
 }
-
-# 소방서 위치
-fire_stations = pd.DataFrame({
-    'Name': ['Station 1', 'Station 2', 'Station 3'],
-    'Latitude': [42.034862, 42.021596, 42.001115],
-    'Longitude': [-93.615031, -93.649759, -93.609166]
-})
 
 # 지도 레이아웃
 layout_mapbox = dict(
@@ -153,23 +160,12 @@ for level, color in color_map.items():
         lat=df['Latitude'], lon=df['Longitude'],
         mode='markers',
         marker=dict(size=7, color=color, opacity=0.6),
-        text='가격: $' + df['SalePrice'].astype(str) + '<br>위험도: ' + df['Risk_Level'].astype(str),
+        text='가격: $' + df['BuildingPricePerTotalSF'].astype(str) + '<br>위험도: ' + df['Risk_Level'].astype(str),
         name=f'위험도 {level}'
     ))
 
-# 소방서 마커
-fire_trace = go.Scattermapbox(
-    lat=fire_stations['Latitude'],
-    lon=fire_stations['Longitude'],
-    mode='markers+text',
-    marker=dict(size=12, color='black'),
-    text=fire_stations['Name'],
-    name='소방서',
-    textposition='top right'
-)
-
 # 시각화
-fig = go.Figure(data=traces + [fire_trace], layout=layout_mapbox)
+fig = go.Figure(data=traces, layout=layout_mapbox)
 fig.show()
 
-correlation = dataset[['PricePerArea', 'Risk_Avg']].corr()
+correlation = dataset[['BuildingPricePerTotalSF', 'Risk_Avg']].corr()
