@@ -169,3 +169,5 @@ fig = go.Figure(data=traces, layout=layout_mapbox)
 fig.show()
 
 correlation = dataset[['BuildingPricePerTotalSF', 'Risk_Avg']].corr()
+
+# 바뀐거 다시 보내보기
